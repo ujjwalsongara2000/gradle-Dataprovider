@@ -1,0 +1,138 @@
+import groovy.transform.Field
+
+@Field def envs = [
+
+    "STAGE" : "stage",
+    "TEST":"test"
+]
+def APP_NAME = "apiautomation-gradle"
+def totalCount
+def failCount
+def passCount
+
+pipeline
+{
+    agent
+    {
+        label "gradle"
+    }
+    triggers
+    {
+        gitlab(triggerOnPush: true, triggerOnMergeRequest: true)
+        cron ("${BRANCH_NAME}"== 'main' ? '45 6 * * 1-5' :'' )
+    }
+     tools
+     {
+        gradle "Gradle-8.2.1"
+     }
+environment
+    {
+        MAIL_TO="mail ids kis pe bhejna he "
+        JWT_DISABLED="true"
+        BRANCH_NAME="${GIT_BRANCH.split('/').size() > 1 ? GIT_BRANCH.split('/')[1..-1].join('/') : GIT_BRANCH}"
+    }
+    options
+    {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30',daysToKeepStr : '90'))
+        gitLabConnection('Gitlab_prod')
+        gitlabCommitStatus(name: 'jenkins')
+        timeStamps()
+        skipStagesAfterUnstable()
+    }
+    parameters{
+        choice(choices:'STAGE\nTEST', description: 'which Environment to run tests in? ', name: 'PIPELINE')
+        string(defaultValue: 'email id ' , description: 'Comma-delimited list of recipients to receive email for automation runs', name:'NOTIFICATION')
+    }
+        stages {
+            stage('setup')
+            {
+                steps
+                {
+                  script
+                  {
+                      echo "'branchName: ${BRANCH_NAME}'"
+                      envName=envs."${params.PIPELINE}"
+                      echo "env is $envName"
+                      echo "Environment value is set ate this time"
+                   }
+                }
+            }
+            stage('Test'){
+                    steps{
+                        script{
+                                catchError(builResult:'SUCCESS',stageResult:'FAILURE'){
+                                sh "gradle clean test -Denv=$envName"
+                                }
+                        }
+                    }
+            }
+            stage('Report Html Generate') {
+                    steps {
+                        publishHTML (target : [allowMissing:false,
+                         alwaysLinkToLastBuild: true,
+                         keepAll: true,
+                         reportDir: 'build/reports/tests/test/'
+                         reportFiles:'index.html'
+                         reportName:'Html report'
+                         reportTitles: 'The Report'])
+                    }
+            }
+            stage('Approval: Prod') {
+                    when{ expression { params.PIPELINE == 'PROD'}}
+                    agent none
+                    steps {
+                        echo "Approval for Prod..."
+                        checkRemedyStatus prod: "${params.PROD}" , notification: "${params.NOTIFICATION}", ticket:"${params.TICKET}"
+                    }
+            }
+            stage('Read HTML Report'){
+                steps{
+                    script{
+                        def htmlContent = readFile("path enter ")
+                        totalCount = extractTestCount(htmlContent)
+                        totalCount = failTestCount(htmlContent)
+
+                        totalCount=totalCount.toInteger()
+                        totalCount=failCount.toInteger()
+
+                        passCount = totalCount-failCount
+
+                        echo "Total count result set: $totalCount"
+                        echo "Passed count result set: $passCount"
+                        echo "Failed count result set: $failCount "
+                    }
+                }
+            }
+        }
+            post
+            {
+                always {
+                    emailext subject: " API Automation Test Execution Report",
+                             body:"""
+                                <p>API Automation Run Summary (From $BRANCH_NAME branch )</p>
+                                <p>Run Against Environment: $envName </p>
+                                <p>Total Test Cases Run : ${totalCount} </p>
+                                <p>Passed Test Cases : ${passCount} </p>
+                                <p>Failed Test Cases : ${failCount} </p>
+                                <p>Please see attached report for additional details on test case level execution details</p>
+                                """,
+                                mimeType:'text/html',
+                                to:'apiautomation-notification',
+                                attachmentsPattern:'path enter'
+            }
+        }
+    }
+    def extractTestCount(htmlContent){
+        def passedMatcher = htmlContent=~ /<div class="infoBox" id="tests">[\s\S]*?<div class="counter">(\d+)<\/div>[\s\S]*?<p>tests<\/p>[\s\S]*?<\/div>/
+        return passedMatcher ? passedMatcher[0][1] : 'N/A'
+    }
+
+    def failTestCount(htmlContent){
+        def passedMatcher = htmlContent=~ /<div class="infoBox" id="Failuers">[\s\S]*?<div class="counter">(\d+)<\/div>[\s\S]*?<p>failures<\/p>[\s\S]*?<\/div>/
+        return passedMatcher ? passedMatcher[0][1] : 'N/A'
+    }
+
+
+
+
